@@ -9,17 +9,30 @@ import Foundation
 import HealthKit
 import Combine
 
+#if targetEnvironment(simulator)
+private let DEMO_MODE_DEFAULT = true   // Simulator: default ON
+#else
+private let DEMO_MODE_DEFAULT = false  // Device: default OFF
+#endif
+
 @MainActor
 final class HeartRateVM: ObservableObject {
     @Published var bpmText: String = "--"
     @Published var status: String = "Not started"
     @Published var authorized: Bool = false
+    @Published var demoMode: Bool = DEMO_MODE_DEFAULT  // ← NUEVA LÍNEA
 
     private let hk = HealthKitService()
-    private var stream: HeartRateStream?
+    private var streamAny: Any?   // ← CAMBIADO: ahora puede ser HeartRateStream O MockHeartRateStream
     private var cancellables: Set<AnyCancellable> = []
 
     func requestAuth() async {
+        // Si demo mode está ON, no necesitamos HealthKit auth
+        guard demoMode == false else {
+            authorized = true
+            status = "Authorized (Demo)"
+            return
+        }
         do {
             try await hk.requestAuthorization()
             authorized = true
@@ -31,36 +44,48 @@ final class HeartRateVM: ObservableObject {
     }
 
     func start() {
-        guard authorized else {
-            status = "Not authorized"
-            return
+        guard authorized else { status = "Not authorized"; return }
+        
+        if demoMode {
+            // MODO DEMO: usa datos falsos
+            let mock = MockHeartRateStream()
+            streamAny = mock
+            mock.$bpm
+                .sink { [weak self] v in self?.bpmText = v.map(String.init) ?? "--" }
+                .store(in: &cancellables)
+            mock.$state
+                .sink { [weak self] st in self?.status = vmStatusText(st) }
+                .store(in: &cancellables)
+            mock.start()
+        } else {
+            // MODO REAL: usa HealthKit
+            let real = HeartRateStream(store: hk.store)
+            streamAny = real
+            real.$bpm
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] v in self?.bpmText = v.map(String.init) ?? "--" }
+                .store(in: &cancellables)
+            real.$state
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] st in self?.status = vmStatusText(st) }
+                .store(in: &cancellables)
+            try? real.start()
         }
-        stream = HeartRateStream(store: hk.store)
-        stream?.$bpm
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] v in
-                self?.bpmText = v.map(String.init) ?? "--"
-            }
-            .store(in: &cancellables)
-        stream?.$state
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] st in
-                self?.status = vmStatusText(st)
-            }
-            .store(in: &cancellables)
-        try? stream?.start()
     }
 
     func pause() {
-        stream?.pause()
+        if let mock = streamAny as? MockHeartRateStream { mock.pause() }
+        if let real = streamAny as? HeartRateStream { real.pause() }
     }
-    
+
     func resume() {
-        stream?.resume()
+        if let mock = streamAny as? MockHeartRateStream { mock.resume() }
+        if let real = streamAny as? HeartRateStream { real.resume() }
     }
-    
+
     func end() {
-        stream?.end()
+        if let mock = streamAny as? MockHeartRateStream { mock.end() }
+        if let real = streamAny as? HeartRateStream { real.end() }
     }
 }
 
