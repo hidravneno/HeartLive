@@ -8,10 +8,12 @@
 import SwiftUI
 
 @main
-struct HeartLive_Watch_AppApp: App {
+struct HeartLiveApp: App {
+    @StateObject private var vm = HeartRateVM()
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            HeartRateView()
+                .environmentObject(vm)
         }
     }
 }
